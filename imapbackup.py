@@ -141,7 +141,7 @@ class ImapBackup:
 
     def __init__(self):
         self.server = None
-        self.config = {}
+        self.config = self.get_config()
 
     def run(self):
         """Main entry point"""
@@ -429,7 +429,7 @@ class ImapBackup:
         spinner = Spinner("Finding Folders", self.config["nospinner"])
 
         # Get hierarchy delimiter
-        delim = self.get_hierarchy_delimiter(self.server)
+        delim = self.get_hierarchy_delimiter()
         spinner.spin()
 
         # Get LIST of all folders
@@ -497,11 +497,17 @@ class ImapBackup:
             self.print_usage()
 
         warnings = []
-        config = {'compress': 'none', 'overwrite': False, 'usessl': False,
-                  'thunderbird': False, 'nospinner': False}
+        config = {
+            'compress': 'none',
+            'overwrite': False,
+            'usessl': False,
+            'thunderbird': False,
+            'nospinner': False,
+            'folders': list()
+        }
         errors = []
 
-        # empty command line
+        # print help
         if not len(opts) and not len(extraargs):
             self.print_usage()
 
@@ -556,51 +562,51 @@ class ImapBackup:
         # done processing command line
         return config, warnings, errors
 
-    def check_config(self, warnings, errors):
+    def check_config(self, config, warnings, errors):
         """Checks the config for consistency, returns (config, warnings, errors)"""
 
-        if self.config['compress'] == 'bzip2' and self.config['overwrite'] is False:
+        if config['compress'] == 'bzip2' and config['overwrite'] is False:
             errors.append(
                 "Cannot append new messages to mbox.bz2 files.  Please specify -y.")
-        if self.config['compress'] == 'gzip' and self.config['overwrite'] is False:
+        if config['compress'] == 'gzip' and config['overwrite'] is False:
             warnings.append(
                 "Appending new messages to mbox.gz files is very slow.  Please Consider\n"
                 "  using -y and compressing the files yourself with gzip -9 *.mbox")
-        if 'server' not in self.config:
+        if 'server' not in config:
             errors.append("No server specified.")
-        if 'user' not in self.config:
+        if 'user' not in config:
             errors.append("No username specified.")
-        if ('keyfilename' in self.config) ^ ('certfilename' in self.config):
+        if ('keyfilename' in config) ^ ('certfilename' in config):
             errors.append("Please specify both key and cert or neither.")
-        if 'keyfilename' in self.config and not self.config['usessl']:
+        if 'keyfilename' in config and not config['usessl']:
             errors.append("Key specified without SSL.  Please use -e or --ssl.")
-        if 'certfilename' in self.config and not self.config['usessl']:
+        if 'certfilename' in config and not config['usessl']:
             errors.append(
                 "Certificate specified without SSL.  Please use -e or --ssl.")
-        if 'server' in self.config and ':' in self.config['server']:
+        if 'server' in config and ':' in config['server']:
             # get host and port strings
-            bits = self.config['server'].split(':', 1)
-            self.config['server'] = bits[0]
+            bits = config['server'].split(':', 1)
+            config['server'] = bits[0]
             # port specified, convert it to int
             if len(bits) > 1 and len(bits[1]) > 0:
                 try:
                     port = int(bits[1])
                     if port > 65535 or port < 0:
                         raise ValueError
-                    self.config['port'] = port
+                    config['port'] = port
                 except ValueError:
                     errors.append(
                         "Invalid port.  Port must be an integer between 0 and 65535.")
-        if 'timeout' in self.config:
+        if 'timeout' in config:
             try:
-                timeout = int(self.config['timeout'])
+                timeout = int(config['timeout'])
                 if timeout <= 0:
                     raise ValueError
-                self.config['timeout'] = timeout
+                config['timeout'] = timeout
             except ValueError:
                 errors.append(
                     "Invalid timeout value.  Must be an integer greater than 0.")
-        return self.config, warnings, errors
+        return config, warnings, errors
 
     def get_config(self):
         """Gets config from command line and console, returns config"""
@@ -617,7 +623,7 @@ class ImapBackup:
         # }
 
         config, warnings, errors = self.process_cline()
-        config, warnings, errors = self.check_config(warnings, errors)
+        config, warnings, errors = self.check_config(config, warnings, errors)
 
         # show warnings
         for warning in warnings:
@@ -779,5 +785,5 @@ if 'Windows' in platform.platform() and '2.3.5' == platform.python_version():
 
 if __name__ == '__main__':
     gc.enable()
-    ImapBackup().run
+    ImapBackup().run()
 
