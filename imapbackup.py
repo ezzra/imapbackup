@@ -57,6 +57,9 @@ import re
 import hashlib
 import gzip
 import bz2
+import email
+import datetime
+import random
 
 
 class SkipFolderException(Exception):
@@ -109,7 +112,7 @@ def pretty_byte_count(num):
 
 
 # Regular expressions for parsing
-MSGID_RE = re.compile("^Message\-Id\: (.+)", re.IGNORECASE + re.MULTILINE)
+MSGID_RE = re.compile(r'^Message-Id: (.+)', re.IGNORECASE + re.MULTILINE)
 BLANKS_RE = re.compile(r'\s+', re.MULTILINE)
 
 # Constants
@@ -147,6 +150,8 @@ class ImapBackup:
         """Main entry point"""
         try:
             self.server = self.connect_and_login()
+            self.config["hierarchy_delimiter"] = self.get_hierarchy_delimiter()
+
             names = self.get_names()
             if self.config["folders"]:
                 dirs = map(lambda x: x.strip(), self.config["folders"].split(','))
@@ -158,7 +163,8 @@ class ImapBackup:
             # for n, name in enumerate(names): # *DEBUG
             #   print n, name # *DEBUG
 
-            self.create_folder_structure(names)
+            if self.config["debox"]:
+                self.create_folder_structure(names)
 
             for name_pair in names:
                 try:
@@ -173,7 +179,7 @@ class ImapBackup:
                     # for f in new_messages:
                     #  print "%s : %s" % (f, new_messages[f])
 
-                    self.download_messages(filename, new_messages)
+                    self.download_messages(filename, foldername, new_messages)
 
                 except SkipFolderException, e:
                     print e
@@ -188,7 +194,7 @@ class ImapBackup:
             print "ERROR:", e
             sys.exit(5)
 
-    def download_messages(self, filename, messages):
+    def download_messages(self, filename, foldername, messages):
         """Download messages from folder and append to mailbox"""
 
         if self.config["overwrite"]:
@@ -199,24 +205,28 @@ class ImapBackup:
         else:
             assert('bzip2' != self.config["compress"])
 
-        # Open disk file
-        if self.config["compress"] == 'gzip':
-            mbox = gzip.GzipFile(filename, 'ab', 9)
-        elif self.config["compress"] == 'bzip2':
-            mbox = bz2.BZ2File(filename, 'wb', 512*1024, 9)
+        # Create path for folders
+        if self.config["debox"]:
+            path_foldernames = foldername.split(self.config["hierarchy_delimiter"])
+
+        # Open mbox files file
         else:
-            mbox = file(filename, 'ab')
+            if self.config["compress"] == 'gzip':
+                mbox = gzip.GzipFile(filename, 'ab', 9)
+            elif self.config["compress"] == 'bzip2':
+                mbox = bz2.BZ2File(filename, 'wb', 512*1024, 9)
+            else:
+                mbox = file(filename, 'ab')
 
         # the folder has already been selected by scanFolder()
 
         # nothing to do
         if not len(messages):
             print "New messages: 0"
-            mbox.close()
+            self.config["debox"] or mbox.close()
             return
 
-        spinner = Spinner("Downloading %s new messages to %s" % (len(messages), filename),
-                          self.config["nospinner"])
+        spinner = Spinner("Downloading %s new messages to %s" % (len(messages), filename), self.config["nospinner"])
         total = biggest = 0
 
         # each new message
@@ -231,7 +241,7 @@ class ImapBackup:
             # the other headers
             if UUID in msg_id:
                 buf = buf + "Message-Id: %s\n" % msg_id
-            mbox.write(buf)
+            self.config["debox"] or mbox.write(buf)
 
             # fetch message
             typ, data = self.server.fetch(messages[msg_id], "RFC822")
@@ -241,8 +251,23 @@ class ImapBackup:
                 # This avoids Thunderbird mistaking a line starting "From  " as the start
                 # of a new message. _Might_ also apply to other mail lients - unknown
                 text = text.replace("\nFrom ", "\n From ")
-            mbox.write(text)
-            mbox.write('\n\n')
+            self.config["debox"] or mbox.write(text)
+            self.config["debox"] or mbox.write('\n\n')
+
+            if self.config["debox"]:
+                message = email.message_from_string(text)
+                subject = re.sub(r'[^\[\] \w\d-]', '_', message["Subject"])
+                date = email.utils.parsedate(message["Date"])
+                datestr = "%s-%s-%s__%s-%s-%s" % (date[0], date[1], date[2], date[3], date[4], date[5])
+                randomint = random.randint(1000, 9999)
+                filepath = os.path.join(os.path.join(*path_foldernames), "%s.%s %s.eml" % (randomint, datestr, subject))
+                with open(filepath, 'w') as mailfile:
+                    mailfile.write(text)
+
+                # set file.last_modified_time to original mail time
+                dateobj = datetime.datetime(year=date[0], month=date[1], day=date[2], hour=date[3], minute=date[4], second=date[5])
+                modtime = time.mktime(dateobj.timetuple())
+                os.utime(filepath, (modtime, modtime))
 
             size = len(text)
             biggest = max(size, biggest)
@@ -252,7 +277,7 @@ class ImapBackup:
             gc.collect()
             spinner.spin()
 
-        mbox.close()
+        self.config["debox"] or mbox.close()
         spinner.stop()
         print ": %s total, %s for largest message" % (pretty_byte_count(total), pretty_byte_count(biggest))
 
@@ -459,7 +484,7 @@ class ImapBackup:
         print ": %s folders" % (len(names))
         return names
 
-    def print_usage(self):
+    def print_usage():
         """Prints usage, exits"""
         #     "                                                                               "
         print "Usage: imapbackup [OPTIONS] -s HOST -u USERNAME [-p PASSWORD]"
@@ -470,6 +495,7 @@ class ImapBackup:
         print " -b --compress=bzip2       Use mbox.bz2 files. Appending not supported: use -y."
         print " -f --=folder              Specifify which folders use.  Comma separated list."
         print " -e --ssl                  Use SSL.  Port defaults to 993."
+        print " -d --debox                Do not create mbox files but seperate files for each mail."
         print " -k KEY --key=KEY          PEM private key file for SSL.  Specify cert, too."
         print " -c CERT --cert=CERT       PEM certificate chain for SSL.  Specify key, too."
         print "                           Python's SSL module doesn't check the cert chain."
@@ -488,7 +514,7 @@ class ImapBackup:
         """Uses getopt to process command line, returns (config, warnings, errors)"""
         # read command line
         try:
-            short_args = "aynzbekt:c:s:u:p:f:"
+            short_args = "aynzbdekt:c:s:u:p:f:"
             long_args = ["append-to-mboxes", "yes-overwrite-mboxes", "compress=",
                          "ssl", "timeout", "keyfile=", "certfile=", "server=", "user=", "pass=",
                          "folders=", "thunderbird", "nospinner"]
@@ -501,6 +527,7 @@ class ImapBackup:
             'compress': 'none',
             'overwrite': False,
             'usessl': False,
+            'debox': False,
             'thunderbird': False,
             'nospinner': False,
             'folders': list()
@@ -531,6 +558,8 @@ class ImapBackup:
                     errors.append("Invalid compression type specified.")
             elif option in ("-e", "--ssl"):
                 config['usessl'] = True
+            elif option in ("-d", "--debox"):
+                config['debox'] = True
             elif option in ("-k", "--keyfile"):
                 config['keyfilename'] = value
             elif option in ("-f", "--folders"):
@@ -702,16 +731,16 @@ class ImapBackup:
     def create_folder_structure(self, names):
         """ Create the folder structure on disk """
         for imap_foldername, filename in sorted(names):
-            disk_foldername = os.path.split(filename)[0]
+            path_foldernames = imap_foldername.split(self.config["hierarchy_delimiter"])
+            disk_foldername = os.path.join(*path_foldernames)
+
             if disk_foldername:
                 try:
-                    # print "*** mkdir:", disk_foldername  # *DEBUG
+                    print "*** mkdir:", disk_foldername  # *DEBUG
                     os.mkdir(disk_foldername)
                 except OSError, e:
                     if e.errno != 17:
                         raise
-
-
 
 
 # From http://www.pixelbeat.org/talks/python/spinner.py
